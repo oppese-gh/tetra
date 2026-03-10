@@ -1,93 +1,528 @@
 <!DOCTYPE html>
-<html>
+<html lang="ja">
 <head>
-<meta charset="utf-8">
-<title>Tetra Tarou Adventure</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+  <title>Tetra Tarou Adventure</title>
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.js"></script>
+  <style>
+    :root {
+      color-scheme: dark;
+    }
 
-<script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.js"></script>
+    * {
+      box-sizing: border-box;
+      touch-action: manipulation;
+    }
 
-<style>
-body{
-margin:0;
-background:#222;
-}
-</style>
+    html,
+    body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: radial-gradient(circle at 20% 10%, #1d365d 0%, #090e18 60%, #05070d 100%);
+      font-family: "Segoe UI", "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif;
+    }
 
+    #game-wrap {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    }
+
+    canvas {
+      border-radius: 14px;
+      box-shadow: 0 16px 45px rgba(0, 0, 0, 0.45);
+    }
+  </style>
 </head>
-
 <body>
+  <div id="game-wrap"></div>
 
-<script>
+  <script>
+    const WORLD_WIDTH = 5200;
+    const GROUND_Y = 610;
 
-const config = {
-type: Phaser.AUTO,
-width: 800,
-height: 450,
-physics:{
-default:'arcade',
-arcade:{
-gravity:{y:1000},
-debug:false
-}
-},
-scene:{
-preload: preload,
-create: create,
-update: update
-}
-};
+    const gameState = {
+      score: 0,
+      hp: 3,
+      elapsedMs: 0,
+      gameOver: false,
+      stageClear: false,
+      canDoubleJump: false,
+      mobileButtons: null,
+      keyboard: null,
+      player: null,
+      enemies: null,
+      coins: null,
+      hearts: null,
+      hazards: null,
+      finish: null,
+      ui: {},
+      bgLayers: [],
+      restartKey: null
+    };
 
-const game = new Phaser.Game(config);
+    const config = {
+      type: Phaser.AUTO,
+      parent: 'game-wrap',
+      width: 360,
+      height: 640,
+      backgroundColor: '#6bb9f9',
+      pixelArt: false,
+      physics: {
+        default: 'arcade',
+        arcade: {
+          gravity: { y: 1300 },
+          debug: false
+        }
+      },
+      scale: {
+        mode: Phaser.Scale.FIT,
+        autoCenter: Phaser.Scale.CENTER_BOTH
+      },
+      scene: {
+        preload,
+        create,
+        update
+      }
+    };
 
-let player;
-let cursors;
-let platforms;
+    new Phaser.Game(config);
 
-function preload(){
+    function preload() {
+      this.load.spritesheet('dude', 'https://labs.phaser.io/assets/sprites/dude.png', {
+        frameWidth: 32,
+        frameHeight: 48
+      });
+      this.load.image('coin', 'https://labs.phaser.io/assets/sprites/gold_1.png');
+      this.load.image('heart', 'https://labs.phaser.io/assets/sprites/heart.png');
+      this.load.image('enemy', 'https://labs.phaser.io/assets/sprites/robot.png');
+      this.load.image('spike', 'https://labs.phaser.io/assets/sprites/thorn.png');
+      this.load.image('flag', 'https://labs.phaser.io/assets/sprites/flag.png');
+    }
 
-this.load.image('ground','https://labs.phaser.io/assets/sprites/platform.png');
-this.load.image('tetra','https://labs.phaser.io/assets/sprites/phaser-dude.png');
+    function create() {
+      resetState();
+      const { width, height } = this.scale;
 
-}
+      this.physics.world.setBounds(0, 0, WORLD_WIDTH, height);
+      this.cameras.main.setBounds(0, 0, WORLD_WIDTH, height);
 
-function create(){
+      createBackground(this, width, height);
+      const platforms = createPlatforms(this);
+      createAnimations(this);
 
-platforms = this.physics.add.staticGroup();
+      gameState.player = this.physics.add.sprite(72, GROUND_Y - 120, 'dude');
+      gameState.player.setCollideWorldBounds(true);
+      gameState.player.setDragX(1600);
+      gameState.player.setMaxVelocity(250, 900);
+      gameState.player.setBounce(0.02);
 
-platforms.create(400,440,'ground').setScale(2).refreshBody();
+      gameState.enemies = this.physics.add.group();
+      gameState.coins = this.physics.add.group({ allowGravity: false, immovable: true });
+      gameState.hearts = this.physics.add.group({ allowGravity: false, immovable: true });
+      gameState.hazards = this.physics.add.staticGroup();
 
-player = this.physics.add.sprite(200,200,'tetra');
+      populateStage(this);
 
-player.setBounce(0.1);
-player.setCollideWorldBounds(true);
+      gameState.finish = this.physics.add.staticImage(WORLD_WIDTH - 80, GROUND_Y - 190, 'flag').setScale(0.9);
 
-this.physics.add.collider(player,platforms);
+      this.physics.add.collider(gameState.player, platforms);
+      this.physics.add.collider(gameState.enemies, platforms);
+      this.physics.add.overlap(gameState.player, gameState.coins, (_, coin) => collectCoin(this, coin));
+      this.physics.add.overlap(gameState.player, gameState.hearts, (_, heart) => collectHeart(this, heart));
+      this.physics.add.overlap(gameState.player, gameState.hazards, () => damagePlayer(this, 1));
+      this.physics.add.overlap(gameState.player, gameState.enemies, (_, enemy) => hitEnemy(this, enemy));
+      this.physics.add.overlap(gameState.player, gameState.finish, () => onStageClear(this));
 
-cursors = this.input.keyboard.createCursorKeys();
+      gameState.keyboard = this.input.keyboard.addKeys({
+        left: Phaser.Input.Keyboard.KeyCodes.LEFT,
+        right: Phaser.Input.Keyboard.KeyCodes.RIGHT,
+        up: Phaser.Input.Keyboard.KeyCodes.UP,
+        a: Phaser.Input.Keyboard.KeyCodes.A,
+        d: Phaser.Input.Keyboard.KeyCodes.D,
+        w: Phaser.Input.Keyboard.KeyCodes.W,
+        space: Phaser.Input.Keyboard.KeyCodes.SPACE
+      });
 
-this.cameras.main.startFollow(player);
+      gameState.restartKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.R);
+      gameState.mobileButtons = createMobileControls(this, width, height);
+      createUI(this);
 
-}
+      this.cameras.main.startFollow(gameState.player, true, 0.12, 0.12);
+      this.cameras.main.setDeadzone(width * 0.35, height * 0.25);
 
-function update(){
+      this.time.addEvent({
+        delay: 1000,
+        callback: () => {
+          if (!gameState.gameOver && !gameState.stageClear) {
+            gameState.elapsedMs += 1000;
+            updateUI(this);
+          }
+        },
+        loop: true
+      });
+    }
 
-if(cursors.left.isDown){
-player.setVelocityX(-200);
-}
-else if(cursors.right.isDown){
-player.setVelocityX(200);
-}
-else{
-player.setVelocityX(0);
-}
+    function update() {
+      if (!gameState.player) return;
 
-if(cursors.up.isDown && player.body.touching.down){
-player.setVelocityY(-500);
-}
+      updateParallax(this);
 
-}
+      if (gameState.gameOver || gameState.stageClear) {
+        gameState.player.setVelocityX(0);
+        if (gameState.gameOver && Phaser.Input.Keyboard.JustDown(gameState.restartKey)) {
+          this.scene.restart();
+        }
+        return;
+      }
 
-</script>
+      const moveLeft = gameState.keyboard.left.isDown || gameState.keyboard.a.isDown || gameState.mobileButtons.left;
+      const moveRight = gameState.keyboard.right.isDown || gameState.keyboard.d.isDown || gameState.mobileButtons.right;
+      const jumpPressed = Phaser.Input.Keyboard.JustDown(gameState.keyboard.up)
+        || Phaser.Input.Keyboard.JustDown(gameState.keyboard.w)
+        || Phaser.Input.Keyboard.JustDown(gameState.keyboard.space)
+        || consumeTouchJump();
 
+      if (moveLeft && !moveRight) {
+        gameState.player.setAccelerationX(-1000);
+        gameState.player.setFlipX(true);
+      } else if (moveRight && !moveLeft) {
+        gameState.player.setAccelerationX(1000);
+        gameState.player.setFlipX(false);
+      } else {
+        gameState.player.setAccelerationX(0);
+      }
+
+      if (jumpPressed) {
+        if (gameState.player.body.onFloor()) {
+          gameState.player.setVelocityY(-590);
+          gameState.canDoubleJump = true;
+        } else if (gameState.canDoubleJump) {
+          gameState.player.setVelocityY(-530);
+          gameState.canDoubleJump = false;
+        }
+      }
+
+      if (gameState.player.body.onFloor()) {
+        gameState.canDoubleJump = true;
+      }
+
+      const speed = Math.abs(gameState.player.body.velocity.x);
+      if (!gameState.player.body.onFloor()) {
+        gameState.player.anims.play('jump', true);
+      } else if (speed > 8) {
+        gameState.player.anims.play('run', true);
+      } else {
+        gameState.player.anims.play('idle', true);
+      }
+
+      if (gameState.player.y > this.scale.height + 80) {
+        damagePlayer(this, 999);
+      }
+
+      gameState.enemies.children.each((enemy) => {
+        if (!enemy.active) return;
+        if (enemy.body.blocked.left) {
+          enemy.setVelocityX(Phaser.Math.Between(70, 120));
+          enemy.setFlipX(false);
+        } else if (enemy.body.blocked.right) {
+          enemy.setVelocityX(-Phaser.Math.Between(70, 120));
+          enemy.setFlipX(true);
+        }
+      });
+    }
+
+    function createPlatforms(scene) {
+      const platforms = scene.physics.add.staticGroup();
+      const blocks = [
+        { x: WORLD_WIDTH / 2, y: GROUND_Y + 25, w: WORLD_WIDTH, h: 64, color: 0x355d3f },
+        { x: 400, y: 500, w: 190, h: 20, color: 0x557f58 },
+        { x: 790, y: 435, w: 160, h: 20, color: 0x557f58 },
+        { x: 1180, y: 380, w: 210, h: 20, color: 0x557f58 },
+        { x: 1540, y: 470, w: 220, h: 20, color: 0x557f58 },
+        { x: 1980, y: 420, w: 140, h: 20, color: 0x557f58 },
+        { x: 2290, y: 345, w: 190, h: 20, color: 0x557f58 },
+        { x: 2700, y: 500, w: 170, h: 20, color: 0x557f58 },
+        { x: 3070, y: 420, w: 180, h: 20, color: 0x557f58 },
+        { x: 3530, y: 350, w: 170, h: 20, color: 0x557f58 },
+        { x: 3930, y: 460, w: 200, h: 20, color: 0x557f58 },
+        { x: 4360, y: 390, w: 200, h: 20, color: 0x557f58 },
+        { x: 4770, y: 320, w: 190, h: 20, color: 0x557f58 }
+      ];
+
+      blocks.forEach((b, i) => {
+        const key = `platform-${i}`;
+        if (!scene.textures.exists(key)) {
+          const g = scene.make.graphics({ x: 0, y: 0, add: false });
+          g.fillStyle(b.color, 1);
+          g.fillRoundedRect(0, 0, b.w, b.h, 8);
+          g.generateTexture(key, b.w, b.h);
+          g.destroy();
+        }
+        platforms.create(b.x, b.y, key).refreshBody();
+      });
+
+      return platforms;
+    }
+
+    function populateStage(scene) {
+      const coinPositions = [
+        [300, 450], [520, 450], [760, 385], [1000, 330], [1180, 325], [1430, 410], [1660, 410],
+        [1980, 360], [2210, 280], [2450, 300], [2700, 450], [3040, 370], [3320, 350], [3530, 300],
+        [3930, 400], [4200, 350], [4460, 330], [4770, 270], [4960, 260]
+      ];
+      coinPositions.forEach(([x, y]) => gameState.coins.create(x, y, 'coin').setScale(0.9));
+
+      const heartPositions = [[1570, 420], [3090, 370], [4300, 340]];
+      heartPositions.forEach(([x, y]) => gameState.hearts.create(x, y, 'heart').setScale(0.75));
+
+      const enemyPositions = [
+        [620, 550], [1360, 320], [2130, 300], [2860, 450], [3690, 300], [4550, 330]
+      ];
+      enemyPositions.forEach(([x, y], idx) => {
+        const enemy = gameState.enemies.create(x, y, 'enemy').setScale(0.72);
+        const speed = 80 + idx * 5;
+        enemy.setVelocityX(idx % 2 ? speed : -speed);
+        enemy.setCollideWorldBounds(true);
+        enemy.setBounce(1, 0);
+        enemy.setImmovable(false);
+      });
+
+      const spikePositions = [910, 1760, 2470, 3350, 4080];
+      spikePositions.forEach((x) => gameState.hazards.create(x, GROUND_Y - 8, 'spike').setScale(0.95));
+    }
+
+    function createAnimations(scene) {
+      if (scene.anims.exists('run')) return;
+
+      scene.anims.create({
+        key: 'idle',
+        frames: [{ key: 'dude', frame: 4 }],
+        frameRate: 1,
+        repeat: -1
+      });
+      scene.anims.create({
+        key: 'run',
+        frames: scene.anims.generateFrameNumbers('dude', { start: 0, end: 8 }),
+        frameRate: 12,
+        repeat: -1
+      });
+      scene.anims.create({
+        key: 'jump',
+        frames: [{ key: 'dude', frame: 5 }],
+        frameRate: 1
+      });
+    }
+
+    function createMobileControls(scene, width, height) {
+      const state = { left: false, right: false, jump: false, jumpQueued: false };
+      const ui = scene.add.container(0, 0).setScrollFactor(0).setDepth(999);
+
+      const left = createButton(scene, 58, height - 70, '◀');
+      const right = createButton(scene, 138, height - 70, '▶');
+      const jump = createButton(scene, width - 72, height - 86, 'JUMP', 84, 84);
+
+      const bindHold = (target, key) => {
+        target.bg.on('pointerdown', () => { state[key] = true; target.bg.setFillStyle(0xffffff, 0.42); });
+        target.bg.on('pointerup', () => { state[key] = false; target.bg.setFillStyle(0xffffff, 0.24); });
+        target.bg.on('pointerout', () => { state[key] = false; target.bg.setFillStyle(0xffffff, 0.24); });
+      };
+
+      bindHold(left, 'left');
+      bindHold(right, 'right');
+
+      jump.bg.on('pointerdown', () => {
+        state.jump = true;
+        state.jumpQueued = true;
+        jump.bg.setFillStyle(0x8fe0ff, 0.45);
+      });
+      jump.bg.on('pointerup', () => {
+        state.jump = false;
+        jump.bg.setFillStyle(0xffffff, 0.24);
+      });
+      jump.bg.on('pointerout', () => {
+        state.jump = false;
+        jump.bg.setFillStyle(0xffffff, 0.24);
+      });
+
+      ui.add([left.bg, left.label, right.bg, right.label, jump.bg, jump.label]);
+
+      return state;
+    }
+
+    function createButton(scene, x, y, text, w = 64, h = 64) {
+      const bg = scene.add.rectangle(x, y, w, h, 0xffffff, 0.24).setStrokeStyle(2, 0xffffff, 0.35).setInteractive();
+      const label = scene.add.text(x, y, text, {
+        fontFamily: 'sans-serif',
+        fontSize: text === 'JUMP' ? '19px' : '29px',
+        color: '#f0f8ff',
+        fontStyle: 'bold'
+      }).setOrigin(0.5);
+      return { bg, label };
+    }
+
+    function consumeTouchJump() {
+      if (!gameState.mobileButtons || !gameState.mobileButtons.jumpQueued) return false;
+      gameState.mobileButtons.jumpQueued = false;
+      return true;
+    }
+
+    function createUI(scene) {
+      const ui = gameState.ui;
+      ui.panel = scene.add.rectangle(180, 32, 336, 52, 0x000000, 0.35).setScrollFactor(0).setDepth(900);
+      ui.text = scene.add.text(24, 16, '', {
+        fontSize: '20px',
+        color: '#f0f5ff',
+        fontStyle: 'bold',
+        stroke: '#000000',
+        strokeThickness: 3
+      }).setScrollFactor(0).setDepth(901);
+
+      ui.message = scene.add.text(180, 320, '', {
+        fontSize: '35px',
+        align: 'center',
+        color: '#ffffff',
+        fontStyle: 'bold',
+        stroke: '#000000',
+        strokeThickness: 7
+      }).setOrigin(0.5).setScrollFactor(0).setDepth(1000);
+
+      updateUI(scene);
+    }
+
+    function updateUI(scene) {
+      const sec = Math.floor(gameState.elapsedMs / 1000);
+      gameState.ui.text.setText(`SCORE: ${gameState.score}   HP: ${gameState.hp}   TIME: ${sec}s`);
+
+      if (gameState.stageClear) {
+        gameState.ui.message.setText(`STAGE CLEAR!\nSCORE ${gameState.score}`);
+      } else if (gameState.gameOver) {
+        gameState.ui.message.setText('GAME OVER\nRキーでリスタート');
+      }
+
+    }
+
+    function collectCoin(scene, coin) {
+      coin.disableBody(true, true);
+      gameState.score += 100;
+      updateUI(scene);
+    }
+
+    function collectHeart(scene, heart) {
+      heart.disableBody(true, true);
+      gameState.hp = Math.min(5, gameState.hp + 1);
+      gameState.score += 150;
+      updateUI(scene);
+    }
+
+    function hitEnemy(scene, enemy) {
+      const player = gameState.player;
+      if (!enemy.active || gameState.gameOver || gameState.stageClear) return;
+
+      if (player.body.velocity.y > 70 && player.y < enemy.y) {
+        enemy.disableBody(true, true);
+        player.setVelocityY(-430);
+        gameState.score += 250;
+        updateUI(scene);
+      } else {
+        damagePlayer(scene, 1);
+      }
+    }
+
+    function damagePlayer(scene, amount) {
+      if (gameState.gameOver || gameState.stageClear) return;
+
+      gameState.hp -= amount;
+      gameState.player.setTintFill(0xff7777);
+      scene.time.delayedCall(150, () => gameState.player.clearTint());
+
+      if (amount >= 999) {
+        gameState.hp = 0;
+      }
+
+      if (gameState.hp <= 0) {
+        gameState.hp = 0;
+        gameState.gameOver = true;
+        gameState.player.setVelocity(0, 0);
+        gameState.player.setAccelerationX(0);
+      } else {
+        const dir = gameState.player.flipX ? 1 : -1;
+        gameState.player.setVelocityX(260 * dir);
+        gameState.player.setVelocityY(-280);
+      }
+      updateUI(scene);
+    }
+
+    function onStageClear(scene) {
+      if (gameState.stageClear || gameState.gameOver) return;
+      gameState.stageClear = true;
+      gameState.player.setVelocity(0, 0);
+      gameState.player.setAccelerationX(0);
+      gameState.score += Math.max(0, 5000 - Math.floor(gameState.elapsedMs / 10));
+      updateUI(scene);
+    }
+
+    function createBackground(scene, width, height) {
+      const makeLayer = (color, alpha, radius, yOffset, step, key) => {
+        if (!scene.textures.exists(key)) {
+          const g = scene.make.graphics({ x: 0, y: 0, add: false });
+          g.fillStyle(color, alpha);
+          for (let x = 0; x <= width * 3; x += step) {
+            const h = Phaser.Math.Between(radius * 1.2, radius * 2.4);
+            g.fillRoundedRect(x, height - h - yOffset, radius * 2, h + yOffset, radius / 2);
+          }
+          g.generateTexture(key, width * 3, height);
+          g.destroy();
+        }
+        return scene.add.tileSprite(0, 0, width, height, key).setOrigin(0).setScrollFactor(0).setDepth(-50);
+      };
+
+      const sky = scene.add.graphics().setDepth(-60);
+      sky.fillGradientStyle(0x9ad7ff, 0x9ad7ff, 0x57a7f0, 0x4f80d6, 1);
+      sky.fillRect(0, 0, width, height);
+      sky.setScrollFactor(0);
+
+      const layerFar = makeLayer(0x6b86c6, 0.48, 120, 40, 170, 'far-mountains');
+      const layerNear = makeLayer(0x506c9a, 0.66, 110, 12, 130, 'near-mountains');
+
+      gameState.bgLayers = [
+        { node: layerFar, speed: 0.15 },
+        { node: layerNear, speed: 0.3 }
+      ];
+    }
+
+    function updateParallax(scene) {
+      const sx = scene.cameras.main.scrollX;
+      gameState.bgLayers.forEach((layer) => {
+        layer.node.tilePositionX = sx * layer.speed;
+      });
+    }
+
+    function resetState() {
+      gameState.score = 0;
+      gameState.hp = 3;
+      gameState.elapsedMs = 0;
+      gameState.gameOver = false;
+      gameState.stageClear = false;
+      gameState.canDoubleJump = false;
+      gameState.mobileButtons = null;
+      gameState.keyboard = null;
+      gameState.player = null;
+      gameState.enemies = null;
+      gameState.coins = null;
+      gameState.hearts = null;
+      gameState.hazards = null;
+      gameState.finish = null;
+      gameState.ui = {};
+      gameState.bgLayers = [];
+      gameState.restartKey = null;
+    }
+  </script>
 </body>
 </html>
