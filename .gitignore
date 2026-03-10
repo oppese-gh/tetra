@@ -1,0 +1,12 @@
+# Prevent accidental commits of binary artifacts that can break text-only PR tooling.
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.mp4
+*.mov
+*.zip
+*.exe
+*.dll
+*.so
